@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/ensure-https-certs.mjs",
     "dev": "next dev -H 0.0.0.0 -p 3001 --experimental-https --experimental-https-key certificates/localhost-key.pem --experimental-https-cert certificates/localhost.pem",
     "build": "next build",
     "start": "next start -p 3001",
@@ -33,6 +34,7 @@
     "eslint": "^9.36.0",
     "eslint-config-next": "^16.2.4",
     "postcss": "^8.5.6",
+    "selfsigned": "^2.4.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.2"
   }

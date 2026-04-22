@@ -1,0 +1,51 @@
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import selfsigned from "selfsigned"
+
+const certDir = path.resolve(process.cwd(), "certificates")
+const keyPath = path.join(certDir, "localhost-key.pem")
+const certPath = path.join(certDir, "localhost.pem")
+
+const force = process.env.NALARXR_REGEN_HTTPS_CERTS === "1"
+if (!force && fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+  process.exit(0)
+}
+
+fs.mkdirSync(certDir, { recursive: true })
+
+const attrs = [{ name: "commonName", value: "localhost" }]
+
+const ipSet = new Set()
+const nets = os.networkInterfaces()
+for (const items of Object.values(nets)) {
+  for (const n of items ?? []) {
+    if (n.family !== "IPv4") continue
+    if (!n.address) continue
+    ipSet.add(n.address)
+  }
+}
+
+const altNames = [
+  { type: 2, value: "localhost" },
+  { type: 7, ip: "127.0.0.1" },
+  { type: 7, ip: "::1" },
+  ...Array.from(ipSet).map((ip) => ({ type: 7, ip })),
+]
+
+const pems = selfsigned.generate(attrs, {
+  algorithm: "sha256",
+  days: 825,
+  keySize: 2048,
+  extensions: [
+    {
+      name: "subjectAltName",
+      altNames,
+    },
+  ],
+})
+
+fs.writeFileSync(keyPath, pems.private, { mode: 0o600 })
+fs.writeFileSync(certPath, pems.cert)
+
+process.stdout.write(`Generated dev HTTPS certs at ${certDir}\n`)

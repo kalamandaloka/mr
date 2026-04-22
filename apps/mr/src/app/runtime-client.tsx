@@ -1,11 +1,12 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { GlassPanel } from "@nalarxr/shared-ui"
 import { fetchModuleManifest, fetchModules, fetchSceneManifest, type ModuleListItem } from "../services/api"
 import { useRuntimeStore } from "../stores/runtimeStore"
 import { SceneCanvas } from "../renderer/SceneCanvas"
+import { createDebugManifest } from "../debug/createDebugManifest"
 
 function sanitizeRichText(input: string) {
   if (typeof window === "undefined") return input
@@ -108,8 +109,16 @@ export function RuntimeClient() {
     [],
   )
   const [autoLoaded, setAutoLoaded] = useState(false)
+  const [debugAutoStarted, setDebugAutoStarted] = useState(false)
 
   const openedBlock = manifest?.contentBlocks.find((b) => b.id === openedContentBlockId) ?? null
+
+  const startDebugScene = useCallback(() => {
+    setCurrentScene("__debug__", "__debug__")
+    setManifest(createDebugManifest())
+    openContent(null)
+    selectObject(null)
+  }, [openContent, selectObject, setCurrentScene, setManifest])
 
   useEffect(() => {
     if (modulesLoaded) return
@@ -155,6 +164,34 @@ export function RuntimeClient() {
       }
     })()
   }, [autoLoaded, openContent, searchParams, setCurrentScene, setManifest])
+
+  useEffect(() => {
+    if (debugAutoStarted) return
+    const debug = searchParams.get("debug")?.trim().toLowerCase() ?? ""
+    if (debug !== "true" && debug !== "1" && debug !== "yes") return
+    if (manifest?.scene.id === "__debug__") {
+      setDebugAutoStarted(true)
+      return
+    }
+    startDebugScene()
+    setDebugAutoStarted(true)
+  }, [debugAutoStarted, manifest?.scene.id, searchParams, startDebugScene])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target) {
+        const tag = target.tagName
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return
+      }
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault()
+        startDebugScene()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [startDebugScene])
 
   useEffect(() => {
     if (!moduleId.trim()) {
@@ -340,6 +377,15 @@ export function RuntimeClient() {
               <div className="text-sm text-slate-100/70">
                 Muat scene manifest dari backend untuk mulai render placeholder object dan UI.
               </div>
+              <button
+                className="pointer-events-auto relative z-[9999] mt-4 rounded-xl border border-cyan-200/20 bg-cyan-400/10 px-4 py-2 text-xs text-cyan-100 hover:bg-cyan-400/15"
+                onClick={() => {
+                  startDebugScene()
+                }}
+                type="button"
+              >
+                Start Debug Scene (Dummy Box)
+              </button>
             </GlassPanel>
           )}
         </div>
