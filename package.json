@@ -1,0 +1,26 @@
+{
+  "name": "nalarxr-platform",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm -ws run dev --if-present",
+    "dev:api": "npm run dev -w apps/backend",
+    "dev:admin": "npm run dev -w apps/web",
+    "dev:mr": "npm run dev -w apps/mr",
+    "build": "npm -ws run build --if-present",
+    "build:api": "npm run build -w apps/backend",
+    "build:admin": "npm run build -w apps/web",
+    "build:mr": "npm run build -w apps/mr",
+    "lint": "npm -ws run lint --if-present",
+    "typecheck": "npm -ws run typecheck --if-present",
+    "typecheck:api": "npm run typecheck -w apps/backend",
+    "typecheck:admin": "npm run typecheck -w apps/web",
+    "typecheck:mr": "npm run typecheck -w apps/mr"
+  }
+}

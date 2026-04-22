@@ -1,0 +1,264 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  STUDENT
+}
+
+enum ModuleStatus {
+  draft
+  published
+  archived
+}
+
+enum SceneStatus {
+  draft
+  published
+  archived
+}
+
+enum SceneType {
+  orientation
+  overview
+  components
+  mechanism
+  practice
+  evaluation
+}
+
+model User {
+  id           String        @id @default(cuid())
+  name         String
+  email        String        @unique
+  passwordHash String        @map("password_hash")
+  role         UserRole      @default(ADMIN)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  uploadedAssets Asset[]
+  progress       UserProgress[]
+  activityLogs   ActivityLog[]
+
+  @@map("users")
+}
+
+model Module {
+  id           String        @id @default(cuid())
+  title        String
+  slug         String        @unique
+  description  String?       @db.Text
+  category     String?
+  thumbnailUrl String?       @map("thumbnail_url")
+  status       ModuleStatus  @default(draft)
+  version      Int           @default(1)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  scenes      Scene[]
+  progress    UserProgress[]
+  activityLog ActivityLog[]
+
+  @@map("modules")
+}
+
+model Scene {
+  id                String      @id @default(cuid())
+  moduleId          String      @map("module_id")
+  title             String
+  slug              String
+  sceneType         SceneType   @map("scene_type")
+  orderNo           Int         @map("order_no")
+  description       String?     @db.Text
+  environmentPreset String      @default("workshop-glass-blue") @map("environment_preset")
+  status            SceneStatus @default(draft)
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+
+  module            Module            @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  objects           SceneObject[]
+  contentBlocks     ContentBlock[]
+  interactions      InteractionConfig[]
+  practiceSteps     PracticeStep[]
+  evaluations       Evaluation[]
+  progress          UserProgress[]
+  activityLog       ActivityLog[]
+
+  @@unique([moduleId, slug])
+  @@index([moduleId, orderNo])
+  @@map("scenes")
+}
+
+model Asset {
+  id           String   @id @default(cuid())
+  name         String
+  fileType     String   @map("file_type")
+  fileUrl      String   @map("file_url")
+  thumbnailUrl String?  @map("thumbnail_url")
+  mimeType     String?  @map("mime_type")
+  size         Int?
+  version      Int      @default(1)
+  uploadedById String?  @map("uploaded_by")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  uploadedBy   User?        @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  sceneObjects SceneObject[]
+
+  @@map("assets")
+}
+
+model SceneObject {
+  id           String   @id @default(cuid())
+  sceneId      String   @map("scene_id")
+  assetId      String   @map("asset_id")
+  objectKey    String   @map("object_key")
+  objectName   String   @map("object_name")
+  positionX    Float    @map("position_x")
+  positionY    Float    @map("position_y")
+  positionZ    Float    @map("position_z")
+  rotationX    Float    @map("rotation_x")
+  rotationY    Float    @map("rotation_y")
+  rotationZ    Float    @map("rotation_z")
+  scaleX       Float    @map("scale_x") @default(1)
+  scaleY       Float    @map("scale_y") @default(1)
+  scaleZ       Float    @map("scale_z") @default(1)
+  isInteractive Boolean @map("is_interactive") @default(false)
+  metadataJson Json?    @map("metadata_json")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  scene Scene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([sceneId, objectKey])
+  @@index([assetId])
+  @@map("scene_objects")
+}
+
+model ContentBlock {
+  id             String   @id @default(cuid())
+  sceneId        String   @map("scene_id")
+  blockType      String   @map("block_type")
+  title          String?
+  body           String?  @db.Text
+  mediaUrl       String?  @map("media_url")
+  positionJson   Json?    @map("position_json")
+  styleJson      Json?    @map("style_json")
+  triggerType    String?  @map("trigger_type")
+  targetObjectKey String? @map("target_object_key")
+  orderNo        Int      @default(0) @map("order_no")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  scene Scene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@index([sceneId, orderNo])
+  @@map("content_blocks")
+}
+
+model InteractionConfig {
+  id              String   @id @default(cuid())
+  sceneId          String   @map("scene_id")
+  objectKey        String   @map("object_key")
+  interactionType  String   @map("interaction_type")
+  actionType       String   @map("action_type")
+  targetType       String?  @map("target_type")
+  targetRef        String?  @map("target_ref")
+  conditionJson    Json?    @map("condition_json")
+  payloadJson      Json?    @map("payload_json")
+  priority         Int      @default(0)
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  scene Scene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@index([sceneId, objectKey])
+  @@map("interaction_configs")
+}
+
+model PracticeStep {
+  id                String   @id @default(cuid())
+  sceneId            String   @map("scene_id")
+  stepNo             Int      @map("step_no")
+  title              String
+  instruction        String   @db.Text
+  expectedAction     String   @map("expected_action")
+  targetObjectKey    String?  @map("target_object_key")
+  targetAnchorKey    String?  @map("target_anchor_key")
+  validationRuleJson Json?    @map("validation_rule_json")
+  successFeedback    String?  @map("success_feedback")
+  failFeedback       String?  @map("fail_feedback")
+  scoreValue         Int?     @map("score_value")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  scene Scene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@unique([sceneId, stepNo])
+  @@map("practice_steps")
+}
+
+model Evaluation {
+  id             String   @id @default(cuid())
+  sceneId         String   @map("scene_id")
+  title           String
+  evaluationType  String   @map("evaluation_type")
+  configJson      Json     @map("config_json")
+  passingScore    Int      @default(0) @map("passing_score")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  scene Scene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@index([sceneId])
+  @@map("evaluations")
+}
+
+model UserProgress {
+  id                String   @id @default(cuid())
+  userId            String   @map("user_id")
+  moduleId          String   @map("module_id")
+  sceneId           String   @map("scene_id")
+  currentStep       Int      @default(0) @map("current_step")
+  completionPercent Float    @default(0) @map("completion_percent")
+  lastStateJson     Json?    @map("last_state_json")
+  startedAt         DateTime @default(now()) @map("started_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  scene  Scene  @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleId, sceneId])
+  @@index([moduleId, sceneId])
+  @@map("user_progress")
+}
+
+model ActivityLog {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  moduleId        String   @map("module_id")
+  sceneId         String   @map("scene_id")
+  objectKey       String?  @map("object_key")
+  interactionType String   @map("interaction_type")
+  actionResult    String?  @map("action_result")
+  payloadJson     Json?    @map("payload_json")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  scene  Scene  @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@index([userId, moduleId, sceneId])
+  @@map("activity_logs")
+}
+
