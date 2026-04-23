@@ -2,7 +2,7 @@
 
 import { useMemo, useRef } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
-import { useXRControllerButtonEvent, useXRInputSourceEvent, useXRInputSourceState, useXRStore } from "@react-three/xr"
+import { useXRControllerButtonEvent, useXRInputSourceState, useXRStore } from "@react-three/xr"
 import { Quaternion, Raycaster, Vector3, type Object3D } from "three"
 import type { SceneManifest, Vec3 } from "@nalarxr/shared-types"
 import { resolveSelectInteraction } from "./interactionController"
@@ -29,7 +29,7 @@ function resolveHitObjectKey(hit: Object3D | null): string | null {
 }
 
 export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: XRControllerManagerProps) {
-  const { scene, camera } = useThree()
+  const { gl, scene } = useThree()
   const xrStore = useXRStore()
 
   const selectObject = useRuntimeStore((s) => s.selectObject)
@@ -51,14 +51,16 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
   const tmpQuat = useMemo(() => new Quaternion(), [])
   const tmpTarget = useMemo(() => new Vector3(), [])
   const tmpMove = useMemo(() => new Vector3(), [])
-  const tmpDelta = useMemo(() => new Vector3(), [])
-  const tmpRight = useMemo(() => new Vector3(), [])
 
   const CLICK_MS = 250
   const DRAG_START_MS = 150
-  const rotateBaseSpeed = 1.8
-  const rotateMoveSensitivity = 6.5
-  const rotateDeadzone = 0.00025
+  const rotationSpeed = 1.2
+
+  const minScale = 0.3
+  const maxScale = 2.0
+  const scaleClampFactorMin = 0.05
+  const scaleClampFactorMax = 8.0
+  const scaleSmoothing = 14
 
   const pressRef = useRef<
     Partial<
@@ -75,23 +77,46 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
   >({})
 
   const gripRef = useRef<{ left: boolean; right: boolean }>({ left: false, right: false })
-  const rotateRef = useRef<{
-    active: boolean
-    handedness: "left" | "right" | null
-    lastPos: Vector3
-  }>({ active: false, handedness: null, lastPos: new Vector3() })
   const poseRef = useRef<
     Record<
       "left" | "right",
       {
-        hasPose: boolean
-        origin: Vector3
-        dir: Vector3
+        hasRayPose: boolean
+        rayOrigin: Vector3
+        rayDir: Vector3
+        hasGripPose: boolean
+        gripPos: Vector3
+        gripQuat: Quaternion
+        triggerPressed: boolean
+        gripPressed: boolean
       }
     >
   >({
-    left: { hasPose: false, origin: new Vector3(), dir: new Vector3() },
-    right: { hasPose: false, origin: new Vector3(), dir: new Vector3() },
+    left: {
+      hasRayPose: false,
+      rayOrigin: new Vector3(),
+      rayDir: new Vector3(),
+      hasGripPose: false,
+      gripPos: new Vector3(),
+      gripQuat: new Quaternion(),
+      triggerPressed: false,
+      gripPressed: false,
+    },
+    right: {
+      hasRayPose: false,
+      rayOrigin: new Vector3(),
+      rayDir: new Vector3(),
+      hasGripPose: false,
+      gripPos: new Vector3(),
+      gripQuat: new Quaternion(),
+      triggerPressed: false,
+      gripPressed: false,
+    },
+  })
+
+  const prevButtonsRef = useRef<Record<"left" | "right", { trigger: boolean; grip: boolean }>>({
+    left: { trigger: false, grip: false },
+    right: { trigger: false, grip: false },
   })
 
   const scaleRef = useRef<{
@@ -100,7 +125,15 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
     startDistance: number
     startScale: Vec3
     prevBothGrip: boolean
-  }>({ active: false, objectKey: null, startDistance: 0, startScale: [1, 1, 1], prevBothGrip: false })
+    lastAppliedScale: Vec3
+  }>({
+    active: false,
+    objectKey: null,
+    startDistance: 0,
+    startScale: [1, 1, 1],
+    prevBothGrip: false,
+    lastAppliedScale: [1, 1, 1],
+  })
 
   const canInteract =
     canInteractObjectKey ??
@@ -116,21 +149,11 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
     await session.end().catch(() => {})
   }
 
-  const computeRay = (handedness: "left" | "right") => {
-    const controller = handedness === "left" ? leftController : rightController
-    const obj = controller?.object
-    if (!obj) return null
-    obj.getWorldPosition(tmpOrigin)
-    obj.getWorldQuaternion(tmpQuat)
-    tmpDir.set(0, 0, -1).applyQuaternion(tmpQuat).normalize()
-    return { origin: tmpOrigin, dir: tmpDir }
-  }
-
   const handleTriggerDown = (handedness: "left" | "right") => {
-    const ray = computeRay(handedness)
-    if (!ray) return
+    const hand = poseRef.current[handedness]
+    if (!hand.hasRayPose) return
 
-    raycaster.set(ray.origin, ray.dir)
+    raycaster.set(hand.rayOrigin, hand.rayDir)
     const intersections = raycaster.intersectObjects(scene.children, true)
 
     let hitKey: string | null = null
@@ -150,8 +173,8 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
       } else {
         tmpTarget.set(0, 0, 0)
       }
-      const toTarget = tmpTarget.clone().sub(ray.origin)
-      const distance = Math.max(0.25, ray.dir.dot(toTarget))
+      const toTarget = tmpTarget.clone().sub(hand.rayOrigin)
+      const distance = Math.max(0.25, hand.rayDir.dot(toTarget))
       pressRef.current[handedness] = {
         objectKey: hitKey,
         pressStartMs: performance.now(),
@@ -188,28 +211,6 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
     delete pressRef.current[handedness]
   }
 
-  useXRInputSourceEvent(leftController?.inputSource, "selectstart", () => handleTriggerDown("left"), [
-    leftController?.id,
-    selectedObjectKey,
-    transformLocked,
-  ])
-  useXRInputSourceEvent(leftController?.inputSource, "selectend", () => handleTriggerUp("left"), [leftController?.id])
-
-  useXRInputSourceEvent(rightController?.inputSource, "selectstart", () => handleTriggerDown("right"), [
-    rightController?.id,
-    selectedObjectKey,
-    transformLocked,
-  ])
-  useXRInputSourceEvent(rightController?.inputSource, "selectend", () => handleTriggerUp("right"), [rightController?.id])
-
-  useXRControllerButtonEvent(leftController, "xr-standard-squeeze", (state) => {
-    gripRef.current.left = state === "pressed"
-  })
-
-  useXRControllerButtonEvent(rightController, "xr-standard-squeeze", (state) => {
-    gripRef.current.right = state === "pressed"
-  })
-
   useXRControllerButtonEvent(rightController, "a-button", (state) => {
     if (state === "pressed") toggleTransformLocked()
   })
@@ -240,24 +241,88 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
     }
   })
 
-  useFrame((_, dt) => {
-    const leftRay = computeRay("left")
-    const rightRay = computeRay("right")
+  useFrame((_, dt, frame) => {
+    if (!frame) return
+    const session = gl.xr.getSession()
+    const refSpace = gl.xr.getReferenceSpace()
+    if (!session || !refSpace) return
 
-    poseRef.current.left.hasPose = !!leftRay
-    poseRef.current.right.hasPose = !!rightRay
-    if (leftRay) {
-      poseRef.current.left.origin.copy(leftRay.origin)
-      poseRef.current.left.dir.copy(leftRay.dir)
+    poseRef.current.left.hasRayPose = false
+    poseRef.current.right.hasRayPose = false
+    poseRef.current.left.hasGripPose = false
+    poseRef.current.right.hasGripPose = false
+    poseRef.current.left.triggerPressed = false
+    poseRef.current.right.triggerPressed = false
+    poseRef.current.left.gripPressed = false
+    poseRef.current.right.gripPressed = false
+
+    for (const inputSource of session.inputSources) {
+      const handedness = inputSource.handedness === "left" || inputSource.handedness === "right" ? inputSource.handedness : null
+      if (!handedness) continue
+      if (!inputSource.gamepad) continue
+
+      const triggerPressed = !!inputSource.gamepad.buttons[0]?.pressed
+      const gripPressed = !!inputSource.gamepad.buttons[1]?.pressed
+
+      const rayPose = frame.getPose(inputSource.targetRaySpace, refSpace)
+      if (rayPose) {
+        tmpOrigin.set(rayPose.transform.position.x, rayPose.transform.position.y, rayPose.transform.position.z)
+        tmpQuat.set(
+          rayPose.transform.orientation.x,
+          rayPose.transform.orientation.y,
+          rayPose.transform.orientation.z,
+          rayPose.transform.orientation.w,
+        )
+        tmpDir.set(0, 0, -1).applyQuaternion(tmpQuat).normalize()
+
+        const hand = poseRef.current[handedness]
+        hand.hasRayPose = true
+        hand.rayOrigin.copy(tmpOrigin)
+        hand.rayDir.copy(tmpDir)
+        hand.triggerPressed = triggerPressed
+        hand.gripPressed = gripPressed
+      }
+
+      const gripSpace = (inputSource as unknown as { gripSpace?: XRSpace }).gripSpace
+      if (gripSpace) {
+        const gripPose = frame.getPose(gripSpace, refSpace)
+        if (gripPose) {
+          const hand = poseRef.current[handedness]
+          hand.hasGripPose = true
+          hand.gripPos.set(gripPose.transform.position.x, gripPose.transform.position.y, gripPose.transform.position.z)
+          hand.gripQuat.set(
+            gripPose.transform.orientation.x,
+            gripPose.transform.orientation.y,
+            gripPose.transform.orientation.z,
+            gripPose.transform.orientation.w,
+          )
+        }
+      }
     }
-    if (rightRay) {
-      poseRef.current.right.origin.copy(rightRay.origin)
-      poseRef.current.right.dir.copy(rightRay.dir)
-    }
+
+    const left = poseRef.current.left
+    const right = poseRef.current.right
+
+    gripRef.current.left = left.gripPressed
+    gripRef.current.right = right.gripPressed
+
+    const prevLeft = prevButtonsRef.current.left
+    const prevRight = prevButtonsRef.current.right
+
+    const leftTriggerDown = left.triggerPressed && !prevLeft.trigger
+    const leftTriggerUp = !left.triggerPressed && prevLeft.trigger
+    const rightTriggerDown = right.triggerPressed && !prevRight.trigger
+    const rightTriggerUp = !right.triggerPressed && prevRight.trigger
+
+    if (leftTriggerDown) handleTriggerDown("left")
+    if (leftTriggerUp) handleTriggerUp("left")
+    if (rightTriggerDown) handleTriggerDown("right")
+    if (rightTriggerUp) handleTriggerUp("right")
 
     for (const handedness of ["left", "right"] as const) {
       const handPose = poseRef.current[handedness]
-      if (!handPose.hasPose) continue
+      if (!handPose.hasRayPose) continue
+      if (!handPose.triggerPressed) continue
       const press = pressRef.current[handedness]
       if (!press?.pressed || !press.pressStartMs) continue
       const key = press.objectKey
@@ -265,74 +330,62 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
       if (transformLocked) continue
       const duration = performance.now() - press.pressStartMs
       if (duration < DRAG_START_MS) continue
-      tmpMove.copy(handPose.dir).multiplyScalar(press.grabDistance).add(handPose.origin)
+      tmpMove.copy(handPose.rayDir).multiplyScalar(press.grabDistance).add(handPose.rayOrigin)
       setObjectTransform(key, { position: toVec3Array(tmpMove) })
     }
 
-    const bothGrip =
-      poseRef.current.left.hasPose &&
-      poseRef.current.right.hasPose &&
-      gripRef.current.left &&
-      gripRef.current.right
+    const bothGrip = left.hasGripPose && right.hasGripPose && left.gripPressed && right.gripPressed
 
-    const singleGripHandedness: "left" | "right" | null =
-      gripRef.current.left !== gripRef.current.right
-        ? gripRef.current.left
-          ? "left"
-          : "right"
-        : null
-
-    if (!transformLocked && selectedObjectKey && !bothGrip && singleGripHandedness) {
-      const pose = poseRef.current[singleGripHandedness]
-      if (pose.hasPose) {
-        if (!rotateRef.current.active || rotateRef.current.handedness !== singleGripHandedness) {
-          rotateRef.current.active = true
-          rotateRef.current.handedness = singleGripHandedness
-          rotateRef.current.lastPos.copy(pose.origin)
-        }
-
-        tmpDelta.copy(pose.origin).sub(rotateRef.current.lastPos)
-        rotateRef.current.lastPos.copy(pose.origin)
-
-        tmpRight.set(1, 0, 0).applyQuaternion(camera.quaternion)
-        tmpRight.set(tmpRight.x, 0, tmpRight.z)
-        if (tmpRight.lengthSq() > 0) tmpRight.normalize()
-
-        const lateral = tmpDelta.dot(tmpRight)
-        const movementYaw = Math.abs(lateral) > rotateDeadzone ? lateral * rotateMoveSensitivity : 0
-        const dir = singleGripHandedness === "left" ? -1 : 1
-        const baseYaw = dir * rotateBaseSpeed * dt
-        const yawDelta = movementYaw + baseYaw
-
-        if (yawDelta !== 0) {
-          const t = objectTransforms[selectedObjectKey]
-          if (t) {
-            setObjectTransform(selectedObjectKey, {
-              rotation: [t.rotation[0], t.rotation[1] + yawDelta, t.rotation[2]],
-            })
-          }
-        }
-      }
-    } else {
-      rotateRef.current.active = false
-      rotateRef.current.handedness = null
-    }
     if (!transformLocked && bothGrip && selectedObjectKey) {
-      if (!scaleRef.current.prevBothGrip) {
-        const startDistance = poseRef.current.left.origin.distanceTo(poseRef.current.right.origin)
+      const leftPos = left.gripPos
+      const rightPos = right.gripPos
+
+      if (!scaleRef.current.prevBothGrip || scaleRef.current.objectKey !== selectedObjectKey) {
+        const startDistance = leftPos.distanceTo(rightPos)
         const current = objectTransforms[selectedObjectKey]
+        const startScale = current?.scale ?? [1, 1, 1]
         scaleRef.current.active = true
         scaleRef.current.objectKey = selectedObjectKey
-        scaleRef.current.startDistance = Math.max(0.05, startDistance)
-        scaleRef.current.startScale = current?.scale ?? [1, 1, 1]
+        scaleRef.current.startDistance = Math.max(0.0001, startDistance)
+        scaleRef.current.startScale = startScale
+        scaleRef.current.lastAppliedScale = current?.scale ?? startScale
       }
 
       if (scaleRef.current.active && scaleRef.current.objectKey === selectedObjectKey) {
-        const factor =
-          poseRef.current.left.origin.distanceTo(poseRef.current.right.origin) / (scaleRef.current.startDistance || 0.05)
-        const f = Math.min(10, Math.max(0.1, factor))
+        const currentDistance = leftPos.distanceTo(rightPos)
+        const rawFactor = currentDistance / (scaleRef.current.startDistance || 0.0001)
+        const factor = Math.min(scaleClampFactorMax, Math.max(scaleClampFactorMin, rawFactor))
         const s0 = scaleRef.current.startScale
-        setObjectTransform(selectedObjectKey, { scale: [s0[0] * f, s0[1] * f, s0[2] * f] })
+
+        const target: Vec3 = [
+          Math.min(maxScale, Math.max(minScale, s0[0] * factor)),
+          Math.min(maxScale, Math.max(minScale, s0[1] * factor)),
+          Math.min(maxScale, Math.max(minScale, s0[2] * factor)),
+        ]
+
+        const alpha = 1 - Math.exp(-scaleSmoothing * dt)
+        const cur = scaleRef.current.lastAppliedScale
+        const next: Vec3 = [
+          cur[0] + (target[0] - cur[0]) * alpha,
+          cur[1] + (target[1] - cur[1]) * alpha,
+          cur[2] + (target[2] - cur[2]) * alpha,
+        ]
+
+        scaleRef.current.lastAppliedScale = next
+        setObjectTransform(selectedObjectKey, { scale: next })
+      }
+    }
+
+    const singleGripHandedness: "left" | "right" | null =
+      left.gripPressed !== right.gripPressed ? (left.gripPressed ? "left" : "right") : null
+
+    if (!transformLocked && selectedObjectKey && !bothGrip && singleGripHandedness) {
+      const dir = singleGripHandedness === "right" ? 1 : -1
+      const t = objectTransforms[selectedObjectKey]
+      if (t) {
+        setObjectTransform(selectedObjectKey, {
+          rotation: [t.rotation[0], t.rotation[1] + dir * rotationSpeed * dt, t.rotation[2]],
+        })
       }
     }
 
@@ -341,6 +394,9 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
       scaleRef.current.objectKey = null
     }
     scaleRef.current.prevBothGrip = bothGrip
+
+    prevButtonsRef.current.left = { trigger: left.triggerPressed, grip: left.gripPressed }
+    prevButtonsRef.current.right = { trigger: right.triggerPressed, grip: right.gripPressed }
   })
 
   return null

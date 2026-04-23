@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "predev": "node scripts/ensure-https-certs.mjs",
-    "dev": "next dev -H 0.0.0.0 -p 3001 --experimental-https --experimental-https-key certificates/localhost-key.pem --experimental-https-cert certificates/localhost.pem",
+    "dev": "node scripts/dev-server.mjs",
+    "dev:http": "next dev -H 0.0.0.0 -p 3002",
     "build": "next build",
     "start": "next start -p 3001",
     "lint": "eslint .",
