@@ -5,6 +5,14 @@ export default [
   { ignores: ["**/.next/**", "**/dist/**", "**/node_modules/**"] },
   js.configs.recommended,
   {
+    files: ["scripts/**/*.{js,mjs,cjs}"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+      },
+    },
+  },
+  {
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
       parser: tsParser,
