@@ -124,6 +124,35 @@ adminRouter.get(
         prisma.activityLog.count(),
       ])
 
+    const orientationScene = await prisma.scene.findFirst({
+      where: {
+        sceneType: "orientation",
+        status: "published",
+        module: { slug: GLOBAL_MODULE_SLUG, status: "published" },
+      },
+      orderBy: { createdAt: "asc" },
+    })
+
+    const overviewBlocks = orientationScene
+      ? await prisma.contentBlock.findMany({
+          where: {
+            sceneId: orientationScene.id,
+          },
+          orderBy: [{ updatedAt: "desc" }],
+          take: 12,
+          include: {
+            scene: {
+              select: {
+                id: true,
+                title: true,
+                sceneType: true,
+                module: { select: { id: true, title: true, slug: true } },
+              },
+            },
+          },
+        })
+      : []
+
     res.json({
       modules,
       scenes,
@@ -134,7 +163,45 @@ adminRouter.get(
       evaluations,
       progress,
       activityLogs,
+      overviewBlocks,
     })
+  }),
+)
+
+adminRouter.post(
+  "/overview/blocks",
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        title: z.string().trim().min(1).max(200),
+        body: z.string().trim().min(1).max(8000),
+      })
+      .parse(req.body)
+
+    const { block } = await prisma.$transaction(async (tx) => {
+      const { scene } = await ensureGlobalOrientation(tx)
+
+      const agg = await tx.contentBlock.aggregate({
+        where: { sceneId: scene.id },
+        _max: { orderNo: true },
+      })
+      const nextOrder = (agg._max.orderNo ?? 0) + 1
+
+      const created = await tx.contentBlock.create({
+        data: {
+          sceneId: scene.id,
+          blockType: "card",
+          title: body.title,
+          body: body.body,
+          orderNo: nextOrder,
+          isActive: true,
+        },
+      })
+
+      return { block: created }
+    })
+
+    res.status(201).json(block)
   }),
 )
 
