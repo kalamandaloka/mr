@@ -4,18 +4,16 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber"
 import type { SceneManifest, Vec3 } from "@nalarxr/shared-types"
 import { XR, createXRStore } from "@react-three/xr"
 import { Suspense, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
-import { Color, Group, LoadingManager, Object3D, Quaternion, Raycaster, Vector3 } from "three"
+import { Color, Group, LoadingManager, Object3D, Vector3 } from "three"
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js"
 import { resolveSelectInteraction } from "../controllers/interactionController"
+import { XRControllerManager } from "../controllers/XRControllerManager"
 import { apiBaseUrl } from "../services/api"
 import { useRuntimeStore } from "../stores/runtimeStore"
+import { DebugBoxObject } from "./DebugBoxObject"
 
 function vec3(v: Vec3) {
   return [v[0], v[1], v[2]] as [number, number, number]
-}
-
-function toVec3Array(v: Vector3): Vec3 {
-  return [v.x, v.y, v.z]
 }
 
 function resolveAssetUrl(url: string) {
@@ -160,304 +158,6 @@ function GltfObject({
   return <primitive object={cloned} position={vec3(position)} rotation={vec3(rotation)} scale={vec3(scale)} />
 }
 
-function XrControllerBindings({ manifest }: { manifest: SceneManifest }) {
-  const { gl, scene } = useThree()
-  const selectObject = useRuntimeStore((s) => s.selectObject)
-  const openContent = useRuntimeStore((s) => s.openContent)
-  const selectedObjectKey = useRuntimeStore((s) => s.selectedObjectKey)
-  const objectTransforms = useRuntimeStore((s) => s.objectTransforms)
-  const setObjectTransform = useRuntimeStore((s) => s.setObjectTransform)
-  const resetObjectTransform = useRuntimeStore((s) => s.resetObjectTransform)
-  const toggleTransformLocked = useRuntimeStore((s) => s.toggleTransformLocked)
-  const transformLocked = useRuntimeStore((s) => s.transformLocked)
-  const resetToDashboard = useRuntimeStore((s) => s.resetToDashboard)
-
-  const raycaster = useMemo(() => new Raycaster(), [])
-  const tmpOrigin = useMemo(() => new Vector3(), [])
-  const tmpDir = useMemo(() => new Vector3(), [])
-  const tmpQuat = useMemo(() => new Quaternion(), [])
-  const tmpTarget = useMemo(() => new Vector3(), [])
-
-  const prevButtonsRef = useRef<
-    Record<
-      "left" | "right",
-      {
-        trigger: boolean
-        grip: boolean
-        abxyPrimary: boolean
-        abxySecondary: boolean
-      }
-    >
-  >({
-    left: { trigger: false, grip: false, abxyPrimary: false, abxySecondary: false },
-    right: { trigger: false, grip: false, abxyPrimary: false, abxySecondary: false },
-  })
-
-  const pressRef = useRef<
-    Partial<
-      Record<
-        "left" | "right",
-        {
-          objectKey: string | null
-          pressStartMs: number
-          grabDistance: number
-        }
-      >
-    >
-  >({})
-
-  const scaleRef = useRef<{
-    active: boolean
-    objectKey: string | null
-    startDistance: number
-    startScale: Vec3
-    prevBothGrip: boolean
-  }>({ active: false, objectKey: null, startDistance: 0, startScale: [1, 1, 1], prevBothGrip: false })
-
-  const handPoseRef = useRef<
-    Record<
-      "left" | "right",
-      {
-        hasPose: boolean
-        origin: Vector3
-        dir: Vector3
-        triggerPressed: boolean
-        gripPressed: boolean
-        abxyPrimary: boolean
-        abxySecondary: boolean
-      }
-    >
-  >({
-    left: { hasPose: false, origin: new Vector3(), dir: new Vector3(), triggerPressed: false, gripPressed: false, abxyPrimary: false, abxySecondary: false },
-    right: { hasPose: false, origin: new Vector3(), dir: new Vector3(), triggerPressed: false, gripPressed: false, abxyPrimary: false, abxySecondary: false },
-  })
-
-  const CLICK_MS = 250
-  const DRAG_START_MS = 150
-
-  function resolveHitObjectKey(hit: Object3D | null): string | null {
-    let cur: Object3D | null = hit
-    while (cur) {
-      const key = (cur.userData as { objectKey?: string }).objectKey
-      if (key) return key
-      cur = cur.parent
-    }
-    return null
-  }
-
-  function canInteractObjectKey(objectKey: string) {
-    if (objectKey.startsWith("cb:")) return true
-    return manifest.objects.some((o) => o.objectKey === objectKey && o.interactive)
-  }
-
-  useFrame((_, __, frame) => {
-    if (!frame) return
-    const session = gl.xr.getSession()
-    const refSpace = gl.xr.getReferenceSpace()
-    if (!session || !refSpace) return
-
-    const rotateStep = Math.PI / 12
-
-    const rotateSelectedYaw = (delta: number) => {
-      if (!selectedObjectKey) return
-      const t = objectTransforms[selectedObjectKey]
-      if (!t) return
-      setObjectTransform(selectedObjectKey, { rotation: [t.rotation[0], t.rotation[1] + delta, t.rotation[2]] })
-    }
-
-    handPoseRef.current.left.hasPose = false
-    handPoseRef.current.right.hasPose = false
-
-    for (const inputSource of session.inputSources) {
-      const handedness = inputSource.handedness === "left" || inputSource.handedness === "right" ? inputSource.handedness : null
-      if (!handedness) continue
-      const gamepad = inputSource.gamepad
-      if (!gamepad) continue
-
-      const pose = frame.getPose(inputSource.targetRaySpace, refSpace)
-      if (!pose) {
-        handPoseRef.current[handedness].hasPose = false
-        continue
-      }
-
-      tmpOrigin.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z)
-      tmpQuat.set(
-        pose.transform.orientation.x,
-        pose.transform.orientation.y,
-        pose.transform.orientation.z,
-        pose.transform.orientation.w,
-      )
-      tmpDir.set(0, 0, -1).applyQuaternion(tmpQuat).normalize()
-
-      const triggerPressed = !!gamepad.buttons[0]?.pressed
-      const gripPressed = !!gamepad.buttons[1]?.pressed
-
-      const abxyPrimary = !!gamepad.buttons[4]?.pressed
-      const abxySecondary = !!gamepad.buttons[5]?.pressed
-
-      const hand = handPoseRef.current[handedness]
-      hand.hasPose = true
-      hand.origin.copy(tmpOrigin)
-      hand.dir.copy(tmpDir)
-      hand.triggerPressed = triggerPressed
-      hand.gripPressed = gripPressed
-      hand.abxyPrimary = abxyPrimary
-      hand.abxySecondary = abxySecondary
-    }
-
-    const left = handPoseRef.current.left
-    const right = handPoseRef.current.right
-    const bothGrip = left.hasPose && right.hasPose && left.gripPressed && right.gripPressed
-
-    const prevLeft = prevButtonsRef.current.left
-    const prevRight = prevButtonsRef.current.right
-
-    const leftTriggerDown = left.triggerPressed && !prevLeft.trigger
-    const leftTriggerUp = !left.triggerPressed && prevLeft.trigger
-    const rightTriggerDown = right.triggerPressed && !prevRight.trigger
-    const rightTriggerUp = !right.triggerPressed && prevRight.trigger
-
-    const leftGripDown = left.gripPressed && !prevLeft.grip
-    const rightGripDown = right.gripPressed && !prevRight.grip
-
-    const leftPrimaryDown = left.abxyPrimary && !prevLeft.abxyPrimary
-    const leftSecondaryDown = left.abxySecondary && !prevLeft.abxySecondary
-    const rightPrimaryDown = right.abxyPrimary && !prevRight.abxyPrimary
-    const rightSecondaryDown = right.abxySecondary && !prevRight.abxySecondary
-
-    if (rightSecondaryDown) {
-      void session.end().catch(() => {})
-      resetToDashboard()
-      return
-    }
-    if (leftSecondaryDown) {
-      void session.end().catch(() => {})
-    }
-
-    if (rightPrimaryDown) toggleTransformLocked()
-    if (leftPrimaryDown) {
-      if (selectedObjectKey) resetObjectTransform(selectedObjectKey)
-    }
-
-    if (!transformLocked && selectedObjectKey && !bothGrip) {
-      if (leftGripDown) rotateSelectedYaw(-rotateStep)
-      if (rightGripDown) rotateSelectedYaw(rotateStep)
-    }
-
-    const handleTriggerDown = (handedness: "left" | "right") => {
-      const hand = handPoseRef.current[handedness]
-      raycaster.set(hand.origin, hand.dir)
-      const intersections = raycaster.intersectObjects(scene.children, true)
-      let hitKey: string | null = null
-      for (const i of intersections) {
-        const key = resolveHitObjectKey(i.object)
-        if (!key) continue
-        if (!canInteractObjectKey(key)) continue
-        hitKey = key
-        break
-      }
-
-      if (hitKey && canInteractObjectKey(hitKey)) {
-        selectObject(hitKey)
-        const transform = objectTransforms[hitKey]
-        if (transform) {
-          tmpTarget.set(transform.position[0], transform.position[1], transform.position[2])
-        } else {
-          tmpTarget.set(0, 0, 0)
-        }
-        const toTarget = tmpTarget.clone().sub(hand.origin)
-        const distance = Math.max(0.25, hand.dir.dot(toTarget))
-        pressRef.current[handedness] = { objectKey: hitKey, pressStartMs: performance.now(), grabDistance: distance }
-      } else {
-        selectObject(null)
-        openContent(null)
-        pressRef.current[handedness] = { objectKey: null, pressStartMs: performance.now(), grabDistance: 0 }
-      }
-    }
-
-    const handleTriggerUp = (handedness: "left" | "right") => {
-      const press = pressRef.current[handedness]
-      const duration = press?.pressStartMs ? performance.now() - press.pressStartMs : 0
-      const key = press?.objectKey ?? null
-      if (key && duration > 0 && duration < CLICK_MS) {
-        if (key.startsWith("cb:")) {
-          openContent(key.slice(3))
-        } else {
-          const hit = resolveSelectInteraction(manifest, key)
-          if (hit?.contentBlockId) openContent(hit.contentBlockId)
-          else openContent(null)
-        }
-      }
-      delete pressRef.current[handedness]
-    }
-
-    const handleTriggerDrag = (handedness: "left" | "right") => {
-      if (transformLocked) return
-      const hand = handPoseRef.current[handedness]
-      if (!hand.triggerPressed) return
-      const press = pressRef.current[handedness]
-      const key = press?.objectKey ?? null
-      if (key && canInteractObjectKey(key) && press?.pressStartMs) {
-        const duration = performance.now() - press.pressStartMs
-        if (duration >= DRAG_START_MS) {
-          const newPos = hand.origin.clone().add(hand.dir.clone().multiplyScalar(press.grabDistance))
-          setObjectTransform(key, { position: toVec3Array(newPos) })
-        }
-      }
-    }
-
-    if (left.hasPose) {
-      if (leftTriggerDown) handleTriggerDown("left")
-      if (leftTriggerUp) handleTriggerUp("left")
-      handleTriggerDrag("left")
-    }
-    if (right.hasPose) {
-      if (rightTriggerDown) handleTriggerDown("right")
-      if (rightTriggerUp) handleTriggerUp("right")
-      handleTriggerDrag("right")
-    }
-
-    if (!transformLocked && bothGrip && selectedObjectKey) {
-      if (!scaleRef.current.prevBothGrip) {
-        const startDistance = left.origin.distanceTo(right.origin)
-        const current = objectTransforms[selectedObjectKey]
-        scaleRef.current.active = true
-        scaleRef.current.objectKey = selectedObjectKey
-        scaleRef.current.startDistance = Math.max(0.05, startDistance)
-        scaleRef.current.startScale = current?.scale ?? [1, 1, 1]
-      }
-
-      if (scaleRef.current.active && scaleRef.current.objectKey === selectedObjectKey) {
-        const factor = left.origin.distanceTo(right.origin) / scaleRef.current.startDistance
-        const f = Math.min(10, Math.max(0.1, factor))
-        const s0 = scaleRef.current.startScale
-        setObjectTransform(selectedObjectKey, { scale: [s0[0] * f, s0[1] * f, s0[2] * f] })
-      }
-    }
-
-    if (!bothGrip) {
-      scaleRef.current.active = false
-      scaleRef.current.objectKey = null
-    }
-    scaleRef.current.prevBothGrip = bothGrip
-
-    prevButtonsRef.current.left = {
-      trigger: left.triggerPressed,
-      grip: left.gripPressed,
-      abxyPrimary: left.abxyPrimary,
-      abxySecondary: left.abxySecondary,
-    }
-    prevButtonsRef.current.right = {
-      trigger: right.triggerPressed,
-      grip: right.gripPressed,
-      abxyPrimary: right.abxyPrimary,
-      abxySecondary: right.abxySecondary,
-    }
-  })
-
-  return null
-}
-
 export function SceneCanvas({ manifest }: { manifest: SceneManifest }) {
   const selectObject = useRuntimeStore((s) => s.selectObject)
   const openContent = useRuntimeStore((s) => s.openContent)
@@ -468,6 +168,7 @@ export function SceneCanvas({ manifest }: { manifest: SceneManifest }) {
 
   const bg = useMemo(() => new Color("#020617"), [])
   const xrStore = useMemo(() => createXRStore(), [])
+  const debugMode = manifest.scene.id === "__debug__"
 
   const [xrSupport, setXrSupport] = useState<{
     secure: boolean
@@ -544,7 +245,15 @@ export function SceneCanvas({ manifest }: { manifest: SceneManifest }) {
           <gridHelper args={[10, 10, "#0ea5e9", "#082f49"]} position={[0, 0, 0]} />
           <XR store={xrStore}>
             <Suspense fallback={null}>
-              <XrControllerBindings manifest={manifest} />
+              <XRControllerManager
+                manifest={manifest}
+                onMenu={() => {
+                  selectObject(null)
+                  openContent(null)
+                  void xrStore.getState().session?.end().catch(() => {})
+                }}
+              />
+              {debugMode ? <DebugBoxObject /> : null}
               {manifest.objects.map((o) => {
                 const onSelect = () => {
                   selectObject(o.objectKey)

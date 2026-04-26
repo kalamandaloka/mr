@@ -24,6 +24,7 @@ type RuntimeState = {
   toggleTransformLocked: () => void
   setObjectTransform: (objectKey: string, transform: Partial<ObjectTransform>) => void
   resetObjectTransform: (objectKey: string) => void
+  ensureObjectTransform: (objectKey: string, initial: ObjectTransform) => void
   setAssetIssue: (objectKey: string, message: string) => void
   resetToDashboard: () => void
 }
@@ -127,6 +128,14 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
       if (!initial) return s
       return {
         objectTransforms: { ...s.objectTransforms, [objectKey]: initial },
+      }
+    }),
+  ensureObjectTransform: (objectKey, initial) =>
+    set((s) => {
+      if (s.objectTransforms[objectKey] && s.initialObjectTransforms[objectKey]) return s
+      return {
+        objectTransforms: { ...s.objectTransforms, [objectKey]: s.objectTransforms[objectKey] ?? initial },
+        initialObjectTransforms: { ...s.initialObjectTransforms, [objectKey]: s.initialObjectTransforms[objectKey] ?? initial },
       }
     }),
   setAssetIssue: (objectKey, message) =>
