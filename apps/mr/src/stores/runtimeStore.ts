@@ -13,7 +13,10 @@ type RuntimeState = {
   manifest: SceneManifest | null
   selectedObjectKey: string | null
   openedContentBlockId: string | null
+  hoveredObjectKey: string | null
+  gripRotatingObjectKey: string | null
   transformLocked: boolean
+  xrSessionRequested: boolean
   objectTransforms: Record<string, ObjectTransform>
   initialObjectTransforms: Record<string, ObjectTransform>
   assetIssues: Record<string, string>
@@ -21,12 +24,15 @@ type RuntimeState = {
   setManifest: (manifest: SceneManifest | null) => void
   selectObject: (objectKey: string | null) => void
   openContent: (contentBlockId: string | null) => void
+  hoverObject: (objectKey: string | null) => void
+  setGripRotatingObjectKey: (objectKey: string | null) => void
   toggleTransformLocked: () => void
   setObjectTransform: (objectKey: string, transform: Partial<ObjectTransform>) => void
   resetObjectTransform: (objectKey: string) => void
   ensureObjectTransform: (objectKey: string, initial: ObjectTransform) => void
   setAssetIssue: (objectKey: string, message: string) => void
   resetToDashboard: () => void
+  setXrSessionRequested: (requested: boolean) => void
 }
 
 export const useRuntimeStore = create<RuntimeState>((set) => ({
@@ -35,7 +41,10 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
   manifest: null,
   selectedObjectKey: null,
   openedContentBlockId: null,
+  hoveredObjectKey: null,
+  gripRotatingObjectKey: null,
   transformLocked: false,
+  xrSessionRequested: false,
   objectTransforms: {},
   initialObjectTransforms: {},
   assetIssues: {},
@@ -47,6 +56,8 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
           manifest: null,
           selectedObjectKey: null,
           openedContentBlockId: null,
+          hoveredObjectKey: null,
+          gripRotatingObjectKey: null,
           objectTransforms: {},
           initialObjectTransforms: {},
           assetIssues: {},
@@ -55,7 +66,7 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
 
       const initial: Record<string, ObjectTransform> = {}
       const eps = 1e-6
-      const defaultObjectPos: Vec3 = [0, 1.4, -2]
+      const defaultObjectPos: Vec3 = [0, 1.15, -0.8]
       for (const o of manifest.objects) {
         const isDefaultPos =
           Math.abs(o.position[0]) < eps && Math.abs(o.position[1]) < eps && Math.abs(o.position[2]) < eps
@@ -86,7 +97,7 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
           }
         }
 
-        if (!position) position = [0, 1.4, -1.2]
+        if (!position) position = [0, 1.2, -0.9]
 
         initial[key] = {
           position,
@@ -99,6 +110,8 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
         manifest,
         selectedObjectKey: null,
         openedContentBlockId: null,
+        hoveredObjectKey: null,
+        gripRotatingObjectKey: null,
         objectTransforms: initial,
         initialObjectTransforms: initial,
         assetIssues: {},
@@ -106,6 +119,8 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
     }),
   selectObject: (objectKey) => set({ selectedObjectKey: objectKey }),
   openContent: (contentBlockId) => set({ openedContentBlockId: contentBlockId }),
+  hoverObject: (objectKey) => set({ hoveredObjectKey: objectKey }),
+  setGripRotatingObjectKey: (objectKey) => set({ gripRotatingObjectKey: objectKey }),
   toggleTransformLocked: () => set((s) => ({ transformLocked: !s.transformLocked })),
   setObjectTransform: (objectKey, transform) =>
     set((s) => {
@@ -149,8 +164,12 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
       manifest: null,
       selectedObjectKey: null,
       openedContentBlockId: null,
+      hoveredObjectKey: null,
+      gripRotatingObjectKey: null,
       objectTransforms: {},
       initialObjectTransforms: {},
       assetIssues: {},
+      xrSessionRequested: false,
     }),
+  setXrSessionRequested: (requested) => set({ xrSessionRequested: requested }),
 }))

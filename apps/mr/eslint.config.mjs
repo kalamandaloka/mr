@@ -5,6 +5,13 @@ export default [
   { ignores: ["**/.next/**", "**/dist/**", "**/node_modules/**"] },
   js.configs.recommended,
   {
+    files: ["scripts/**/*.mjs"],
+    rules: {
+      "no-undef": "off",
+      "no-unused-vars": "off",
+    },
+  },
+  {
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
       parser: tsParser,

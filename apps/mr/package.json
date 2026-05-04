@@ -15,6 +15,7 @@
   "dependencies": {
     "@nalarxr/shared-ui": "0.0.0",
     "@nalarxr/shared-types": "0.0.0",
+    "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.3.0",
     "@react-three/xr": "^6.6.3",
     "next": "^16.2.4",

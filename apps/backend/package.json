@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev --skip-generate",
+    "seed": "tsx src/seed.ts"
   },
   "dependencies": {
     "@nalarxr/shared-types": "0.0.0",

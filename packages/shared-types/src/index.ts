@@ -55,7 +55,7 @@ export interface SceneObjectManifest {
 
 export interface ContentBlockManifest {
   id: string
-  type: "card" | "instruction" | "hotspot" | "label"
+  type: "card" | "instruction" | "hotspot" | "label" | "video"
   title?: string
   body?: string
   mediaUrl?: string

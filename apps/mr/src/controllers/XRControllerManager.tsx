@@ -1,9 +1,9 @@
 "use client"
 
-import { useMemo, useRef } from "react"
+import { useCallback, useMemo, useRef } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
-import { useXRControllerButtonEvent, useXRInputSourceState, useXRStore } from "@react-three/xr"
-import { Quaternion, Raycaster, Vector3, type Object3D } from "three"
+import { useXRControllerButtonEvent, useXRInputSourceEvent, useXRInputSourceState, useXRStore } from "@react-three/xr"
+import { Quaternion, Raycaster, Vector3 } from "three"
 import type { SceneManifest, Vec3 } from "@nalarxr/shared-types"
 import { resolveSelectInteraction } from "./interactionController"
 import { useRuntimeStore } from "../stores/runtimeStore"
@@ -11,6 +11,9 @@ import { useRuntimeStore } from "../stores/runtimeStore"
 export type XRControllerManagerProps = {
   manifest: SceneManifest
   canInteractObjectKey?: (objectKey: string) => boolean
+  onTriggerClickObjectKey?: (objectKey: string) => boolean
+  getObject3D?: (objectKey: string) => any | null
+  onInputEdge?: () => void
   onMenu?: () => void
 }
 
@@ -18,8 +21,8 @@ function toVec3Array(v: Vector3): Vec3 {
   return [v.x, v.y, v.z]
 }
 
-function resolveHitObjectKey(hit: Object3D | null): string | null {
-  let cur: Object3D | null = hit
+function resolveHitObjectKey(hit: any | null): string | null {
+  let cur: any | null = hit
   while (cur) {
     const key = (cur.userData as { objectKey?: string }).objectKey
     if (key) return key
@@ -28,12 +31,21 @@ function resolveHitObjectKey(hit: Object3D | null): string | null {
   return null
 }
 
-export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: XRControllerManagerProps) {
+export function XRControllerManager({
+  manifest,
+  canInteractObjectKey,
+  onTriggerClickObjectKey,
+  getObject3D,
+  onInputEdge,
+  onMenu,
+}: XRControllerManagerProps) {
   const { gl, scene } = useThree()
   const xrStore = useXRStore()
 
   const selectObject = useRuntimeStore((s) => s.selectObject)
   const openContent = useRuntimeStore((s) => s.openContent)
+  const hoverObject = useRuntimeStore((s) => s.hoverObject)
+  const setGripRotatingObjectKey = useRuntimeStore((s) => s.setGripRotatingObjectKey)
   const selectedObjectKey = useRuntimeStore((s) => s.selectedObjectKey)
   const objectTransforms = useRuntimeStore((s) => s.objectTransforms)
   const setObjectTransform = useRuntimeStore((s) => s.setObjectTransform)
@@ -71,10 +83,28 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
           pressStartMs: number
           grabDistance: number
           pressed: boolean
+          dragged?: boolean
         }
       >
     >
   >({})
+
+  const hoverKeyRef = useRef<Record<"left" | "right", string | null>>({ left: null, right: null })
+  const rotationCommitRef = useRef<{ key: string | null; y: number | null }>({ key: null, y: null })
+
+  const buttonRotateRef = useRef<{ active: boolean; key: string | null; lastY: number | null }>({
+    active: false,
+    key: null,
+    lastY: null,
+  })
+
+  const canInteract =
+    canInteractObjectKey ??
+    ((objectKey: string) => {
+      if (objectKey.startsWith("cb:")) return true
+      if (objectKey.startsWith("debug:")) return true
+      return manifest.objects.some((o) => o.objectKey === objectKey && o.interactive)
+    })
 
   const gripRef = useRef<{ left: boolean; right: boolean }>({ left: false, right: false })
   const poseRef = useRef<
@@ -135,18 +165,21 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
     lastAppliedScale: [1, 1, 1],
   })
 
-  const canInteract =
-    canInteractObjectKey ??
-    ((objectKey: string) => {
-      if (objectKey.startsWith("cb:")) return true
-      if (objectKey.startsWith("debug:")) return true
-      return manifest.objects.some((o) => o.objectKey === objectKey && o.interactive)
-    })
-
   const endSession = async () => {
     const session = xrStore.getState().session
     if (!session) return
     await session.end().catch(() => {})
+  }
+
+  const goHome = () => {
+    void endSession().finally(() => {
+      resetToDashboard()
+      selectObject(null)
+      openContent(null)
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("mr:go-home"))
+      }
+    })
   }
 
   const handleTriggerDown = (handedness: "left" | "right") => {
@@ -155,6 +188,15 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
 
     raycaster.set(hand.rayOrigin, hand.rayDir)
     const intersections = raycaster.intersectObjects(scene.children, true)
+
+    for (const i of intersections) {
+      const key = resolveHitObjectKey(i.object)
+      if (!key) continue
+      if (key.startsWith("ui:")) {
+        return
+      }
+      break
+    }
 
     let hitKey: string | null = null
     for (const i of intersections) {
@@ -166,7 +208,17 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
     }
 
     if (hitKey && canInteract(hitKey)) {
+      if (hitKey.startsWith("ui:") && onTriggerClickObjectKey && onTriggerClickObjectKey(hitKey)) {
+        pressRef.current[handedness] = {
+          objectKey: null,
+          pressStartMs: performance.now(),
+          grabDistance: 0,
+          pressed: false,
+        }
+        return
+      }
       selectObject(hitKey)
+      onInputEdge?.()
       const transform = objectTransforms[hitKey]
       if (transform) {
         tmpTarget.set(transform.position[0], transform.position[1], transform.position[2])
@@ -180,6 +232,7 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
         pressStartMs: performance.now(),
         grabDistance: distance,
         pressed: true,
+        dragged: false,
       }
       return
     }
@@ -191,15 +244,58 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
       pressStartMs: performance.now(),
       grabDistance: 0,
       pressed: true,
+      dragged: false,
     }
+    onInputEdge?.()
   }
+
+  useXRInputSourceEvent(
+    "all",
+    "selectstart",
+    (e) => {
+      const handedness = e.inputSource.handedness === "left" || e.inputSource.handedness === "right" ? e.inputSource.handedness : null
+      if (!handedness) return
+      const hand = poseRef.current[handedness]
+      if (!hand.hasRayPose) return
+      raycaster.set(hand.rayOrigin, hand.rayDir)
+      const intersections = raycaster.intersectObjects(scene.children, true)
+      for (const i of intersections) {
+        const key = resolveHitObjectKey(i.object)
+        if (!key) continue
+        if (key.startsWith("ui:")) {
+          console.log("Video Clicked")
+          onTriggerClickObjectKey?.(key)
+          onInputEdge?.()
+          return
+        }
+        break
+      }
+    },
+    [onTriggerClickObjectKey, onInputEdge, raycaster, scene.children],
+  )
 
   const handleTriggerUp = (handedness: "left" | "right") => {
     const press = pressRef.current[handedness]
     if (!press) return
     const duration = press.pressStartMs ? performance.now() - press.pressStartMs : 0
     const key = press.objectKey ?? null
+
+    if (key && press.dragged) {
+      const obj = getObject3D?.(key)
+      if (obj) {
+        const p = obj.position
+        setObjectTransform(key, { position: [p.x, p.y, p.z] })
+      }
+      delete pressRef.current[handedness]
+      onInputEdge?.()
+      return
+    }
+
     if (key && duration > 0 && duration < CLICK_MS) {
+      if (onTriggerClickObjectKey && onTriggerClickObjectKey(key)) {
+        delete pressRef.current[handedness]
+        return
+      }
       if (key.startsWith("cb:")) {
         openContent(key.slice(3))
       } else {
@@ -209,7 +305,36 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
       }
     }
     delete pressRef.current[handedness]
+    onInputEdge?.()
   }
+
+  const handleHover = useCallback(
+    (handedness: "left" | "right") => {
+      const hand = poseRef.current[handedness]
+      if (!hand.hasRayPose) return
+      raycaster.set(hand.rayOrigin, hand.rayDir)
+      const intersections = raycaster.intersectObjects(scene.children, true)
+
+      for (const i of intersections) {
+        const key = resolveHitObjectKey(i.object)
+        if (!key) continue
+        if (key.startsWith("ui:")) {
+          if (hoverKeyRef.current[handedness] !== key) {
+            hoverKeyRef.current[handedness] = key
+            hoverObject(key)
+          }
+          return
+        }
+        break
+      }
+
+      if (hoverKeyRef.current[handedness] !== null) {
+        hoverKeyRef.current[handedness] = null
+        hoverObject(null)
+      }
+    },
+    [hoverObject, raycaster, scene.children],
+  )
 
   useXRControllerButtonEvent(rightController, "a-button", (state) => {
     if (state === "pressed") toggleTransformLocked()
@@ -217,9 +342,7 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
 
   useXRControllerButtonEvent(rightController, "b-button", (state) => {
     if (state !== "pressed") return
-    void endSession().finally(() => {
-      resetToDashboard()
-    })
+    goHome()
   })
 
   useXRControllerButtonEvent(leftController, "x-button", (state) => {
@@ -234,11 +357,7 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
 
   useXRControllerButtonEvent(leftController, "xr-standard-thumbstick", (state) => {
     if (state !== "pressed") return
-    if (onMenu) onMenu()
-    else {
-      selectObject(null)
-      openContent(null)
-    }
+    goHome()
   })
 
   useFrame((_, dt, frame) => {
@@ -251,10 +370,6 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
     poseRef.current.right.hasRayPose = false
     poseRef.current.left.hasGripPose = false
     poseRef.current.right.hasGripPose = false
-    poseRef.current.left.triggerPressed = false
-    poseRef.current.right.triggerPressed = false
-    poseRef.current.left.gripPressed = false
-    poseRef.current.right.gripPressed = false
 
     for (const inputSource of session.inputSources) {
       const handedness = inputSource.handedness === "left" || inputSource.handedness === "right" ? inputSource.handedness : null
@@ -319,6 +434,15 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
     if (rightTriggerDown) handleTriggerDown("right")
     if (rightTriggerUp) handleTriggerUp("right")
 
+    if ((leftTriggerDown || leftTriggerUp || rightTriggerDown || rightTriggerUp) && onInputEdge) {
+      onInputEdge()
+    }
+
+    if (frame && (Math.floor(performance.now() / 50) % 2 === 0)) {
+      handleHover("left")
+      handleHover("right")
+    }
+
     for (const handedness of ["left", "right"] as const) {
       const handPose = poseRef.current[handedness]
       if (!handPose.hasRayPose) continue
@@ -331,7 +455,15 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
       const duration = performance.now() - press.pressStartMs
       if (duration < DRAG_START_MS) continue
       tmpMove.copy(handPose.rayDir).multiplyScalar(press.grabDistance).add(handPose.rayOrigin)
-      setObjectTransform(key, { position: toVec3Array(tmpMove) })
+      const obj = getObject3D?.(key)
+      if (obj) {
+        obj.position.set(tmpMove.x, tmpMove.y, tmpMove.z)
+        obj.updateMatrixWorld(true)
+        press.dragged = true
+      } else {
+        setObjectTransform(key, { position: toVec3Array(tmpMove) })
+        press.dragged = true
+      }
     }
 
     const bothGrip = left.hasGripPose && right.hasGripPose && left.gripPressed && right.gripPressed
@@ -372,26 +504,59 @@ export function XRControllerManager({ manifest, canInteractObjectKey, onMenu }: 
         ]
 
         scaleRef.current.lastAppliedScale = next
-        setObjectTransform(selectedObjectKey, { scale: next })
+        const obj = getObject3D?.(selectedObjectKey)
+        if (obj) {
+          obj.scale.set(next[0], next[1], next[2])
+          obj.updateMatrixWorld(true)
+        } else {
+          setObjectTransform(selectedObjectKey, { scale: next })
+        }
       }
     }
 
-    const singleGripHandedness: "left" | "right" | null =
-      left.gripPressed !== right.gripPressed ? (left.gripPressed ? "left" : "right") : null
+    rotationCommitRef.current = { key: null, y: null }
 
-    if (!transformLocked && selectedObjectKey && !bothGrip && singleGripHandedness) {
-      const dir = singleGripHandedness === "right" ? 1 : -1
-      const t = objectTransforms[selectedObjectKey]
-      if (t) {
-        setObjectTransform(selectedObjectKey, {
-          rotation: [t.rotation[0], t.rotation[1] + dir * rotationSpeed * dt, t.rotation[2]],
-        })
-      }
+    if (scaleRef.current.prevBothGrip && !bothGrip && scaleRef.current.objectKey) {
+      setObjectTransform(scaleRef.current.objectKey, { scale: scaleRef.current.lastAppliedScale })
     }
 
     if (!bothGrip) {
       scaleRef.current.active = false
       scaleRef.current.objectKey = null
+    }
+
+    const leftOnlyGrip = left.gripPressed && !right.gripPressed
+    const rightOnlyGrip = right.gripPressed && !left.gripPressed
+    const rotateActive = !transformLocked && !!selectedObjectKey && !bothGrip && (leftOnlyGrip || rightOnlyGrip)
+
+    if (rotateActive && selectedObjectKey) {
+      const dir = rightOnlyGrip ? 1 : -1
+      const obj = getObject3D?.(selectedObjectKey)
+      if (obj) {
+        obj.rotation.y += dir * rotationSpeed * dt
+        obj.rotation.x = 0
+        obj.rotation.z = 0
+        obj.updateMatrixWorld(true)
+
+        if (!buttonRotateRef.current.active || buttonRotateRef.current.key !== selectedObjectKey) {
+          setGripRotatingObjectKey(selectedObjectKey)
+        }
+        buttonRotateRef.current.active = true
+        buttonRotateRef.current.key = selectedObjectKey
+        buttonRotateRef.current.lastY = obj.rotation.y
+      }
+    } else {
+      if (buttonRotateRef.current.active && buttonRotateRef.current.key && buttonRotateRef.current.lastY != null) {
+        setObjectTransform(buttonRotateRef.current.key, { rotation: [0, buttonRotateRef.current.lastY, 0] })
+      }
+      if (buttonRotateRef.current.active) setGripRotatingObjectKey(null)
+      buttonRotateRef.current.active = false
+      buttonRotateRef.current.key = null
+      buttonRotateRef.current.lastY = null
+    }
+
+    if ((left.gripPressed !== prevLeft.grip || right.gripPressed !== prevRight.grip) && onInputEdge) {
+      onInputEdge()
     }
     scaleRef.current.prevBothGrip = bothGrip
 
